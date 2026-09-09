@@ -1,0 +1,105 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "tuned-in",
+	"main": "src/index.js",
+	"compatibility_date": "2025-08-01",
+	// The frontend. Anything that exists under public/ is served straight from
+	// Cloudflare's edge and never reaches the Worker; everything else (the /api
+	// surface, /static/uploads/*, /static/zen_backdrop.png) falls through to it.
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS"
+	},
+	// The top level deploys nothing: this project ships two builds and both
+	// live in the named environments below, so every deploy names one.
+	//   npm run deploy:local   the in-browser build
+	//   npm run deploy:app     the signed-in build
+	// A bare `wrangler deploy` has no database bound and will fail.
+	"observability": {
+		"enabled": true
+	},
+	// The distribution build: same Worker code, a different profile baked in by
+	// `npm run deploy:demo`, and its own empty database so none of the personal
+	// board can reach it.
+	//
+	// Wrangler does NOT inherit `vars` or `d1_databases` into a named
+	// environment — anything not repeated here comes up unbound at runtime,
+	// which is why they are spelled out again rather than left to the top level.
+	//
+	// Before the first demo deploy:
+	//   npx wrangler d1 create tuned-in-demo
+	// then paste the id below.
+	"env": {
+		"demo": {
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "tuned-in-demo",
+					"database_id": "0dabd944-e52d-4576-9916-01fe0c7a78d8",
+					"migrations_dir": "migrations"
+				}
+			],
+			"vars": {
+				"TZ": "America/Chicago"
+			},
+			"observability": {
+				"enabled": true
+			}
+		},
+		// The multi-user build: one database per person, chosen per request from
+		// the identity Cloudflare Access has already verified. See src/auth.js
+		// and the walkthrough in CLOUDFLARE.md.
+		//
+		// This environment ships empty on purpose. Adding a person means creating
+		// their database and binding it here, so the list below is the authoritative
+		// answer to "who has a board" - and `npm run db:migrate:app` walks exactly
+		// these entries, so no one's schema can drift behind the Worker's.
+		//
+		//   npx wrangler d1 create tuned-in-alex
+		// then add:
+		//   { "binding": "DB_1", "database_name": "tuned-in-alex",
+		//     "database_id": "<the id it prints>", "migrations_dir": "migrations" }
+		//
+		// ACCESS_TEAM_DOMAIN and ACCESS_AUD are not secret and live here once you
+		// have them. USER_DIRECTORY maps email -> binding and is set as a secret
+		// instead, so no one's address is committed:
+		//   npx wrangler secret put USER_DIRECTORY --env app
+		//
+		// Until all three are set the Worker stays single-tenant, so a half-finished
+		// setup cannot accidentally serve one person's board to another.
+		"app": {
+			// Read from the Access redirect the Worker issues when it is not signed
+			// in: the team domain is the host, and the AUD is the "kid" parameter
+			// (and the "aud" claim inside the meta token). Neither is secret.
+			// USER_DIRECTORY is, and is set with `wrangler secret put`.
+			"d1_databases": [
+				{
+					"binding": "DB_1",
+					"database_name": "tuned-in-user-1",
+					"database_id": "6f345f16-73aa-4272-8a53-d427769454d5",
+					"migrations_dir": "migrations"
+				},
+				{
+					"binding": "DB_2",
+					"database_name": "tuned-in-user-2",
+					"database_id": "39f853c6-8d10-4df3-814f-b58d2d4535a9",
+					"migrations_dir": "migrations"
+				},
+				{
+					"binding": "DB_3",
+					"database_name": "tuned-in-user-3",
+					"database_id": "f7f9772e-79ae-490a-a28e-8e954054e475",
+					"migrations_dir": "migrations"
+				}
+			],
+			"vars": {
+				"TZ": "America/Chicago",
+				"ACCESS_TEAM_DOMAIN": "super-band-37db.cloudflareaccess.com",
+				"ACCESS_AUD": "43dfe1e983790825f58b663931dbfe3b72a7088096527aae444d76fe64aa6e1b"
+			},
+			"observability": {
+				"enabled": true
+			}
+		}
+	}
+}

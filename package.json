@@ -1,0 +1,29 @@
+{
+  "name": "tuned-in-app",
+  "version": "2026.8.21",
+  "private": true,
+  "type": "module",
+  "description": "Tuned In — a flexible task board, running on Cloudflare Workers + D1.",
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "scripts": {
+    "dev:demo": "node scripts/build-profile.mjs default && wrangler dev --env demo",
+    "dev:local": "node scripts/build-profile.mjs local && wrangler dev --env demo",
+    "deploy:local": "npm test && node scripts/build-profile.mjs local && wrangler deploy --env demo && npm run verify:local",
+    "build:demo": "node scripts/build-profile.mjs default && wrangler deploy --dry-run --outdir dist",
+    "verify:local": "node scripts/verify-deploy.mjs --target local",
+    "verify:app": "node scripts/verify-deploy.mjs --target app",
+    "test": "node --test \"test/*.test.js\"",
+    "profile": "node scripts/build-profile.mjs",
+    "db:create:demo": "wrangler d1 create tuned-in-demo",
+    "db:migrate:demo": "wrangler d1 migrations apply tuned-in-demo --remote --env demo",
+    "db:migrate:local:demo": "wrangler d1 migrations apply tuned-in-demo --local --env demo",
+    "db:migrate:all": "npm run db:migrate && npm run db:migrate:demo",
+    "deploy:app": "npm test && node scripts/build-profile.mjs default && wrangler deploy --env app && npm run verify:app",
+    "dev:app": "node scripts/build-profile.mjs default && wrangler dev --env app",
+    "db:migrate:app": "node scripts/migrate-all.mjs app",
+    "db:migrate:app:local": "node scripts/migrate-all.mjs app --local"
+  },
+  "devDependencies": {
+    "wrangler": "^4.28.0"
+  }
+}
