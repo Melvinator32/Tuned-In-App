@@ -135,6 +135,10 @@ export async function updateCell(env, request, taskId) {
   const becomingDone = isStatus && String(value) === "Done";
 
   const allColumns = await all(db, "SELECT id, type FROM columns");
+  // Everything this request removes, so the response can name it and the
+  // browser never has to refetch the board to find out.
+  const removed = [];
+  const created = [];
   let resultForCaller = null;
   const writes = [];
   for (const sib of siblings) {
@@ -162,7 +166,7 @@ export async function updateCell(env, request, taskId) {
       let keep = seen.get(g);
       let drop = s.id;
       if (drop === taskId) { [keep, drop] = [drop, keep]; seen.set(g, keep); }
-      await deleteTaskTree(db, drop);
+      removed.push(...await deleteTaskTree(db, drop));
     }
   }
 
@@ -177,7 +181,8 @@ export async function updateCell(env, request, taskId) {
     if (String(updatedCells[a.trigger_col] ?? "") !== String(a.trigger_val)) continue;
     const dest = (a.action_val || "").trim();
     if (!dest || dest === curGroup) continue;
-    if (await createLinkedCopy(db, taskId, dest, true)) copied = true;
+    const newId = await createLinkedCopy(db, taskId, dest, true);
+    if (newId) { copied = true; created.push(newId); }
   }
 
   // Leaving a "parked" group: parked groups are the destinations of enabled
@@ -201,8 +206,8 @@ export async function updateCell(env, request, taskId) {
     const stale = placements.filter(
       (p) => parked.has(p.group_name) && parked.get(p.group_name) !== String(value));
     if (stale.length && placements.length - stale.length >= 1) {
-      for (const p of stale) await deleteTaskTree(db, p.id);
-      copied = true; // force the client to reload the whole board
+      for (const p of stale) removed.push(...await deleteTaskTree(db, p.id));
+      copied = true; // placements changed, so the response carries them
     }
   }
 
@@ -212,7 +217,7 @@ export async function updateCell(env, request, taskId) {
   if (becomingDone && linkId) {
     const others = await all(
       db, "SELECT id FROM tasks WHERE link_id = ? AND id != ?", linkId, taskId);
-    for (const o of others) await deleteTaskTree(db, o.id);
+    for (const o of others) removed.push(...await deleteTaskTree(db, o.id));
     // The surviving copy is no longer linked to anything — clear its link_id.
     await run(db, "UPDATE tasks SET link_id = NULL WHERE id = ?", taskId);
     collapsed = true;
@@ -221,12 +226,48 @@ export async function updateCell(env, request, taskId) {
   if (!resultForCaller) {
     resultForCaller = { cells: parseJSON(row.cells), group_name: row.group_name };
   }
+
+  // What this request actually touched: every placement of the task as it now
+  // stands, plus their subtasks, plus the ids of anything deleted along the way.
+  //
+  // Sending it is what lets the browser skip refetching the board. That refetch
+  // was the single most expensive thing about changing a status: on a real
+  // board /api/state is half a megabyte and takes the better part of a second,
+  // and it was being paid on every edit to a linked task, purely to discover
+  // changes the server had just made and could have described.
+  // Gathered from every angle rather than one lookup, because any single one
+  // can come up empty. Keying off the edited task's link fails when the parked
+  // sweep has just deleted that very task: the row is gone, the link with it,
+  // and a copy made moments earlier in another group goes unreported - which is
+  // exactly the task that went missing from the board while this was tested.
+  const nowRow = await first(db, "SELECT link_id FROM tasks WHERE id = ?", taskId);
+  const candidates = new Set([taskId, ...created]);
+  for (const link of [linkId, nowRow && nowRow.link_id].filter(Boolean)) {
+    for (const r of await all(db, "SELECT id FROM tasks WHERE link_id = ?", link)) {
+      candidates.add(r.id);
+    }
+  }
+  // Subtasks travel with their parents and carry their own link ids, so they
+  // are reached through the tree rather than through the link.
+  for (const id of [...candidates]) {
+    for (const kid of await descendantIds(db, id)) candidates.add(kid);
+  }
+
+  const gone = new Set(removed);
+  const ids = [...candidates].filter((id) => !gone.has(id));
+  const rows = ids.length
+    ? await all(db, `SELECT * FROM tasks WHERE id IN (${placeholders(ids.length)})`, ...ids)
+    : [];
+  const changed = rows.map((r) => ({ ...r, cells: parseJSON(r.cells) }));
+
   return json({
     id: taskId,
     cells: resultForCaller.cells,
     group_name: resultForCaller.group_name,
-    linked_changed: !!linkId || copied, // refresh if linked or a copy was made
+    linked_changed: !!linkId || copied, // an older page still refetches on this
     collapsed,
+    changed,
+    deleted: [...new Set(removed)],
   });
 }
 

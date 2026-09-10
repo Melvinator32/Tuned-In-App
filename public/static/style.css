@@ -323,6 +323,10 @@ tbody tr.subtask-row .row-grip { color: transparent; cursor: default; }
 .kfield { display: flex; align-items: center; gap: 8px; font-size: 12px; min-height: 22px; }
 .kfield-label { flex: 0 0 70px; color: var(--mid-gray); font-size: 10px; text-transform: uppercase; letter-spacing: .4px; }
 .kfield-ctrl { flex: 1; min-width: 0; }
+/* A long status or priority label ran off the right edge of the card, which is
+   most visible on a phone where the card is the width of the screen. The pill
+   shrinks and clips instead; the full text is on the row's title attribute. */
+.kfield-ctrl .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .kfield-ctrl .cell-input { font-size: 12px; }
 .kfield-ctrl .cell-text { font-size: 12px; }
 .kcard .ktitle .cell-text { font-weight: 600; font-size: 14px; }
@@ -413,7 +417,20 @@ tbody tr.subtask-row .row-grip { color: transparent; cursor: default; }
 
   /* Kanban: lanes go full-width and stack vertically (easier to thumb through
      than sideways scrolling on a phone). */
-  .kanban { flex-direction: column; gap: 12px; overflow-x: visible; }
+  .kanban {
+    flex-direction: row; gap: 12px;
+    overflow-x: auto; scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;         /* momentum swipe on iOS */
+    scroll-padding-left: 12px;
+  }
+  /* Lane widths are written inline, because on a desktop you drag them wider.
+     That inline value beats any rule here, so on a phone - where one lane to a
+     screen is the only sensible width - it has to be overridden outright. */
+  .kanban > .kcol {
+    flex: 0 0 86vw !important;
+    width: 86vw !important;
+    scroll-snap-align: start;
+  }
   .kcol { width: 100% !important; flex: 1 1 auto !important; min-width: 0; }
   .lane-resize-grip { display: none; }
 
@@ -531,8 +548,15 @@ tbody tr.subtask-row .row-grip { color: transparent; cursor: default; }
 .today-chip:active { cursor: grabbing; }
 .today-chip.top { border-left: 3px solid var(--cyan); background: var(--off-white); }
 .today-chip-grip { color: var(--mid-gray); font-size: 11px; letter-spacing: -2px; }
-.today-chip-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.today-chip-pri { font-size: 10px; color: #fff; padding: 1px 7px; border-radius: 8px; white-space: nowrap; }
+.today-chip-name {
+  flex: 1 1 auto; min-width: 7em;      /* never collapse to an ellipsis and nothing else */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.today-chip-pri {
+  font-size: 10px; color: #fff; padding: 1px 7px; border-radius: 8px;
+  white-space: nowrap; flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; max-width: 40%;
+}
 .today-tip { font-size: 12px; color: var(--mid-gray); margin-top: 14px; }
 .today-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .today-navbtn { border: 1px solid var(--light-gray); background: var(--surface); border-radius: 8px; padding: 5px 11px; cursor: pointer; font-size: 14px; font-family: inherit; }
@@ -609,6 +633,24 @@ tbody tr.subtask-row .row-grip { color: transparent; cursor: default; }
 .today-block.compact .today-block-del { width: 16px; height: 16px; font-size: 11px; }
 
 /* ---- Eisenhower matrix ---- */
+.mx-quad-pick {
+  font-size: 11px; padding: 1px 4px; border-radius: 6px; max-width: 8.5em;
+  border: 1px solid var(--light-gray); background: var(--surface); color: var(--mid-gray);
+}
+.mx-quad-pick:has(option:checked:not([value=""])) { color: var(--ink); border-color: var(--sage); }
+
+/* On a phone a chip cannot hold a grip, a name, a duplicate badge, a priority
+   label and two selects on one line - something has to give, and squeezing the
+   name to "Log the quart..." gives up the one part you are reading. So the name
+   takes a line of its own and the controls sit under it. */
+@media (max-width: 620px) {
+  .mx-chip { flex-wrap: wrap; row-gap: 6px; }
+  .mx-chip .today-chip-name { flex: 1 0 100%; min-width: 0; white-space: normal; }
+  .mx-chip .today-chip-grip { display: none; }   /* dragging is the select's job here */
+  .mx-chip .today-chip-pri { max-width: 55%; }
+  .mx-chip .mx-quad-pick, .mx-chip .mx-est { font-size: 12px; padding: 3px 6px; }
+}
+
 .matrix-layout { display: flex; gap: 20px; align-items: flex-start; }
 .matrix-left { flex: 0 0 300px; max-width: 300px; }
 .mx-unsorted-zone { min-height: 120px; border: 1px dashed var(--light-gray); border-radius: 10px; padding: 8px; }
@@ -628,10 +670,51 @@ tbody tr.subtask-row .row-grip { color: transparent; cursor: default; }
 .mx-chip { background: var(--surface); }
 .mx-unsort { border: none; background: transparent; color: var(--mid-gray); cursor: pointer; font-size: 13px; padding: 0 2px; }
 .mx-unsort:hover { color: var(--danger); }
-@media (max-width: 760px) {
+/* Between a tablet and a phone: stack, one column of quadrants. */
+@media (max-width: 760px) and (min-width: 621px) {
   .matrix-layout { flex-direction: column; }
   .matrix-left { flex: 1 1 auto; max-width: 100%; width: 100%; }
   .matrix-grid { grid-template-columns: 1fr; grid-template-rows: auto; min-height: 0; }
+}
+
+/* On a phone, sorting and reviewing are two different jobs and there is only
+   room for one at a time. So they become two pages you swipe between: the list
+   you tag from, then the matrix that tagging produced.
+   Stacking them instead - which is what this used to do - buried the matrix
+   under however many unsorted tasks you had, which on a real board is all of
+   them. The quadrants stay 2x2 in their own page, because the position in the
+   square is the whole point of the thing. */
+@media (max-width: 620px) {
+  .matrix-layout {
+    flex-direction: row; gap: 0;
+    overflow-x: auto; scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+  .matrix-left, .matrix-right {
+    flex: 0 0 100%; max-width: 100%; width: 100%;
+    scroll-snap-align: start;
+  }
+  .matrix-left { padding-right: 4px; }
+  .matrix-right { padding-left: 4px; }
+  .matrix-grid {
+    grid-template-columns: 1fr 1fr; grid-template-rows: auto auto;
+    min-height: 0; gap: 8px;
+  }
+  .mx-quad { min-height: 120px; padding: 8px; }
+  .mx-quad-head { flex-wrap: wrap; gap: 2px 6px; margin-bottom: 6px; }
+  .mx-quad-title { font-size: 13px; }
+  .mx-quad-sub { font-size: 10px; flex: 1 0 100%; }
+  /* The drag handle between the panes is a desktop resizer; there is nothing
+     to resize when each pane is the width of the screen. */
+  .panel-divider { display: none; }
+}
+
+/* Which of the two hints to show. The desktop one talks about dragging, which
+   is not how you do it on a phone. */
+.mx-hint-touch { display: none; }
+@media (max-width: 620px) {
+  .mx-hint-drag { display: none; }
+  .mx-hint-touch { display: block; }
 }
 
 /* ---- current-time line on Today's schedule ---- */

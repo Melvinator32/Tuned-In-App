@@ -695,6 +695,33 @@ function makeMatrixChip(t, inQuadrant) {
   if (prioCol && t.cells[prioCol.id]) {
     chip.append(el("span", { class: "today-chip-pri", style: `background:${colorOf("priority", t.cells[prioCol.id])}` }, t.cells[prioCol.id]));
   }
+  // Which quadrant this belongs in, as a control rather than a gesture.
+  //
+  // Dragging was the only way to sort, which is fine with a mouse and close to
+  // unusable on a phone: the chips are narrow, the quadrants are below the fold,
+  // and a drag competes with the page scroll. A select does the same job in one
+  // tap, works the same on both, and gives the keyboard a way in.
+  const quadPick = el("select", { class: "mx-quad-pick",
+    title: "Which quadrant this task belongs in" });
+  quadPick.append(el("option", { value: "" }, "— sort"));
+  EIS_QUADRANTS.forEach((q) => {
+    quadPick.append(el("option",
+      Object.assign({ value: q.key }, q.key === eisQuadOf(t) ? { selected: "selected" } : {}),
+      q.title));
+  });
+  quadPick.addEventListener("mousedown", (e) => e.stopPropagation());  // don't start a drag
+  quadPick.addEventListener("click", (e) => e.stopPropagation());
+  quadPick.addEventListener("change", async (e) => {
+    e.stopPropagation();
+    const dest = quadPick.value;
+    t.cells["__eis"] = dest;
+    await updateCell(t.id, "__eis", dest);
+    // Land it at the end of wherever it went, so it does not jump the queue.
+    await eisRenumber(quadOrdered(matrixTasks(), dest));
+    render();
+  });
+  chip.append(quadPick);
+
   // Time estimate — 15-minute increments, feeds Today's auto-plan
   const est = estMinutes(t);
   const sel = el("select", { class: "mx-est" + (est ? " set" : ""),
@@ -776,7 +803,12 @@ function renderMatrix() {
   if (!unsorted.length) unsortedZone.append(el("div", { class: "muted", style: "font-size:13px" }, "Everything is sorted."));
   attachQuadrantDrop(unsortedZone, "");   // dropping back here unsorts
   left.append(unsortedZone);
-  left.append(el("p", { class: "today-tip" }, "Drag a task into a quadrant →  (drag back here to unsort)"));
+  // Two hints, one shown at a time by CSS. Telling someone on a phone to drag a
+  // task into a quadrant is telling them to do the thing that does not work.
+  left.append(el("p", { class: "today-tip mx-hint-drag" },
+    "Drag a task into a quadrant →  (drag back here to unsort)"));
+  left.append(el("p", { class: "today-tip mx-hint-touch" },
+    "Tag each task above, then swipe left to see the matrix →"));
 
   // Parked work, listed rather than silently missing. It stays out of the
   // quadrants on purpose - it is not yours to plan right now - but it is on

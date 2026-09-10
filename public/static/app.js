@@ -454,7 +454,7 @@ function checkServerBuild() {
   document.body.prepend(banner);
 }
 
-async function loadState() {
+async function loadState(opts = {}) {
   STATE = await api("/api/state");
   goalCellsCollapsed = (STATE.settings && STATE.settings["goal_collapsed"]) === "true";
   updateCollapseGoalsBtn();    // reflect the Pillar/Idea collapse toggle
@@ -465,7 +465,9 @@ async function loadState() {
   applyTabOrder();             // arrange tabs in the user's saved order
   updateAlarmToggle();         // reflect the alarm on/off setting
   applyZenBackdrop();          // reflect a saved zen-garden backdrop
-  render();
+  // A caller that already knows which groups moved can skip the full repaint
+  // and rebuild just those instead - see refreshGroups.
+  if (!opts.skipRender) render();
   ensureTimerTick();           // keep running timers ticking live
 }
 
@@ -485,6 +487,24 @@ function applyDensity(val) {
   document.documentElement.style.setProperty("--row-pad-y", padY.toFixed(1) + "px");
 }
 
+/** Fold a mutation response's own account of what changed into STATE.
+ *
+ *  `changed` carries whole rows for every placement of the task and their
+ *  subtasks; `deleted` carries the ids of anything the server removed - a
+ *  duplicate placement, a copy collapsed away by Done, a stale parked row.
+ *  Applying both leaves STATE where a refetch would have left it. */
+function applyServerChanges(resp) {
+  if (Array.isArray(resp.deleted) && resp.deleted.length) {
+    const gone = new Set(resp.deleted);
+    STATE.tasks = STATE.tasks.filter((t) => !gone.has(t.id));
+  }
+  for (const row of resp.changed || []) {
+    const at = STATE.tasks.findIndex((t) => t.id === row.id);
+    if (at === -1) STATE.tasks.push(row);
+    else STATE.tasks[at] = row;
+  }
+}
+
 // ---------------- Mutations ----------------
 async function updateCell(taskId, colId, value) {
   const before = STATE.tasks.find((x) => x.id === taskId);
@@ -493,25 +513,73 @@ async function updateCell(taskId, colId, value) {
     method: "PATCH",
     body: JSON.stringify({ col: colId, value }),
   });
-  // If this task is linked to copies in other groups (or copies were just
-  // collapsed because it was marked Done), the simplest correct refresh is to
-  // reload the whole board so every copy reflects the change.
+  // A linked task's copies live in other groups and the server has just changed
+  // them too, so the local board is out of date in places this response does not
+  // describe. That needs a refetch - but not a full repaint. The groups those
+  // copies sit in, before and after, are the only ones that can have moved.
   if (resp.linked_changed || resp.collapsed) {
-    await loadState();
+    // The server has just changed copies of this task in other groups, and may
+    // have created or deleted some. The response describes none of that, so the
+    // board has to be refetched - but it does not have to be repainted whole.
+    //
+    // Which groups actually moved is worked out by comparing the board before
+    // and after, rather than inferred from the link. Inferring was wrong: when
+    // an automation creates the first copy, the task being edited has no link
+    // yet, and the group the new copy lands in is nowhere in the response - so
+    // the copy simply would not appear until something else forced a render.
+    const placedBefore = new Map(STATE.tasks.map((x) => [x.id, x.group_name]));
+
+    if (Array.isArray(resp.changed)) {
+      // The server said what it touched, so there is nothing to go and find
+      // out. That is the difference between an edit costing milliseconds and
+      // costing the better part of a second: /api/state on a real board is half
+      // a megabyte and was being fetched purely to discover changes the server
+      // had just made and could have described.
+      applyServerChanges(resp);
+    } else {
+      // An older Worker than this page. Refetching still works, just slowly.
+      await loadState({ skipRender: true });
+    }
+
+    const placedAfter = new Map(STATE.tasks.map((x) => [x.id, x.group_name]));
+    const touched = new Set();
+    for (const [id, group] of placedBefore) {
+      const now = placedAfter.get(id);
+      if (now !== group) { touched.add(group); if (now) touched.add(now); }
+    }
+    for (const [id, group] of placedAfter) {
+      if (!placedBefore.has(id)) touched.add(group);
+    }
+
+    if (touched.size) {
+      if (!refreshGroups([...touched])) render();
+      return;
+    }
+    // Nothing moved between groups, so only cells changed - on this task and on
+    // any copy of it. Repainting those rows is enough.
+    const link = STATE.tasks.find((x) => x.id === taskId);
+    const family = link && link.link_id
+      ? STATE.tasks.filter((x) => x.link_id === link.link_id)
+      : [link].filter(Boolean);
+    if (!family.length || !family.every((x) => refreshTaskCells(x.id, colId))) render();
     return;
   }
+
   const t = STATE.tasks.find((x) => x.id === taskId);
   if (t) {
     t.cells = resp.cells; // pick up automation side-effects on cells
     if (resp.group_name !== undefined) t.group_name = resp.group_name;
   }
-  // An automation may have moved the task to a different group, and the row
-  // then belongs somewhere else entirely - that needs the whole board. When it
-  // has not moved, only this task's own cells changed, so rebuilding its row is
-  // both enough and far cheaper. refreshTaskCells says no when it cannot be
-  // sure, and then we fall back.
+  // An automation may have moved the task to another group. Only the group it
+  // left and the one it arrived in change, so those two are rebuilt rather than
+  // the board. When nothing moved, one row is enough. Both helpers say no when
+  // they cannot be sure, and then we fall back.
   const movedGroup = resp.group_name !== undefined && resp.group_name !== prevGroup;
-  if (movedGroup || !refreshTaskCells(taskId, colId)) render();
+  if (movedGroup) {
+    if (!refreshGroups([prevGroup, resp.group_name])) render();
+  } else if (!refreshTaskCells(taskId, colId)) {
+    render();
+  }
 }
 
 // Shows a confirm dialog when an action would create a duplicate in a group.

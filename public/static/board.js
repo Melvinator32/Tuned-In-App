@@ -495,6 +495,58 @@ function openTagPicker(title, scope, initialTags, commitFn, blurb) {
  *
  *  Moving between groups is handled by the caller, which knows the old group.
  */
+/** Rebuild only the named groups, leaving the rest of the board alone.
+ *
+ *  A status change almost always moves one task between two groups. Repainting
+ *  the whole board for that meant rebuilding every row on it - around 450ms on
+ *  a full board, on every single edit - when two sections were all that moved.
+ *
+ *  Returns false rather than guessing whenever what is on screen might not match
+ *  what a full render would produce: another view, an active search, a group
+ *  with no section to replace. The caller falls back to render(). */
+function refreshGroups(names) {
+  if (currentView !== "table") return false;
+  if (typeof search !== "undefined" && search) return false;
+
+  const board = $("#board");
+  if (!board) return false;
+
+  // Grouped exactly as renderTable does it, so a rebuilt section is identical
+  // to the one a full render would have produced.
+  const groups = {};
+  filteredTasks().filter((t) => !t.parent_id).forEach((t) => {
+    (groups[t.group_name] = groups[t.group_name] || []).push(t);
+  });
+  knownGroupNames().forEach((n) => { if (!(n in groups)) groups[n] = []; });
+
+  const ordered = Object.keys(groups).sort((a, b) => {
+    const pa = STATE.group_order[a];
+    const pb = STATE.group_order[b];
+    if (pa == null && pb == null) return 0;
+    if (pa == null) return 1;
+    if (pb == null) return -1;
+    return pa - pb;
+  });
+
+  const sections = [...board.querySelectorAll(".group")];
+  const wanted = [...new Set(names.filter(Boolean))];
+  if (!wanted.length) return false;
+
+  // Every section is resolved before any is replaced, so a failure never leaves
+  // the board half rebuilt.
+  const work = [];
+  for (const name of wanted) {
+    const index = ordered.indexOf(name);
+    const existing = sections.find((s) => s.dataset.group === name);
+    if (index === -1 || !existing) return false;
+    work.push([existing, name, index]);
+  }
+  for (const [existing, name, index] of work) {
+    existing.replaceWith(buildGroupSection(name, index, groups));
+  }
+  return true;
+}
+
 function refreshTaskCells(taskId, changedColId) {
   if (currentView !== "table") return false;
   if (typeof search !== "undefined" && search) return false;
@@ -615,6 +667,344 @@ function buildFilterBar(shown, total) {
   return bar;
 }
 
+/** One group: its header, its table of rows, its totals.
+ *
+ *  Pulled out of renderTable so a single group can be rebuilt on its own. A
+ *  status change usually moves one task between two groups, and rebuilding the
+ *  whole board for that meant reconstructing every row on the board - about
+ *  450ms on a full one, on every edit. See refreshGroups in app.js. */
+function buildGroupSection(g, gi, groups) {
+  // Defensive: never let an empty/undefined group name render as a blank or
+  // the literal word "undefined" — show a clear placeholder instead.
+  const safeOldName = g && g !== "undefined" && g !== "null" ? g : "(unnamed group)";
+  const oldName = safeOldName;  // explicit snapshot for the closure (defense in depth)
+  const color = groupColor(g, gi);
+  const groupEl = el("div", { class: "group", "data-group": g });
+  const isCollapsed = collapsedGroups.has(g);
+  // Done-style groups get review controls; rows come from the filtered list.
+  const isDoneGrp = isDoneReviewGroup(groups[g]);
+  const rowList = isDoneGrp ? doneReviewList(groups[g]) : groups[g];
+
+  // Group header — collapse caret, color dot, name, count, delete.
+  // The header is draggable to reorder whole groups.
+  const header = el("div", { class: "group-header", style: `border-left-color:${color}`, draggable: "true" });
+
+  // Collapse/expand caret (hides the group's table, leaving just the header)
+  const collapseCaret = el("button", { class: "group-collapse-caret", title: isCollapsed ? "Expand group" : "Collapse group" },
+    isCollapsed ? "▸" : "▾");
+  collapseCaret.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (collapsedGroups.has(g)) collapsedGroups.delete(g);
+    else collapsedGroups.add(g);
+    render();
+  });
+  header.append(collapseCaret);
+
+  // Color dot
+  const dot = el("button", { class: "group-color-dot", title: "Change group color", style: `background:${color}` });
+  dot.addEventListener("click", (e) => { e.stopPropagation(); openGroupColorPicker(g, dot); });
+  header.append(dot);
+
+  const gname = el("span", { class: "gname", style: `color:${color}`, title: "Click to rename" }, oldName);
+  inlineRename(gname, () => oldName, async (newName) => {
+    console.log("[rename group]", { oldName, newName, originalKey: g });
+    if (!oldName || !newName || oldName === newName || newName === "undefined" || newName === "null") {
+      console.warn("[rename group] skipped — invalid input:", { oldName, newName });
+      return;
+    }
+    const dbOldName = g;
+    try {
+      const resp = await api("/api/groups/rename", {
+        method: "PATCH",
+        body: JSON.stringify({ old: dbOldName, new: newName }),
+      });
+      console.log("[rename group] server response:", resp);
+      STATE.tasks.forEach((t) => { if (t.group_name === dbOldName) t.group_name = newName; });
+      STATE.automations.forEach((a) => { if (a.action_type === "moveToGroup" && a.action_val === dbOldName) a.action_val = newName; });
+      // carry custom color + order + collapse state to the new name locally
+      if (STATE.group_colors[dbOldName]) {
+        STATE.group_colors[newName] = STATE.group_colors[dbOldName];
+        delete STATE.group_colors[dbOldName];
+      }
+      if (STATE.group_order[dbOldName] != null) {
+        STATE.group_order[newName] = STATE.group_order[dbOldName];
+        delete STATE.group_order[dbOldName];
+      }
+      if (collapsedGroups.has(dbOldName)) { collapsedGroups.delete(dbOldName); collapsedGroups.add(newName); }
+      render();
+    } catch (err) {
+      console.error("[rename group] failed:", err);
+    }
+  });
+  header.append(gname);
+  header.append(el("span", { class: "gcount" },
+    isDoneGrp && rowList.length !== groups[g].length
+      ? `${rowList.length} of ${groups[g].length}`
+      : `${groups[g].length} item${groups[g].length !== 1 ? "s" : ""}`));
+  // Delete-group button (×) — confirms, then either deletes all its tasks or moves them
+  const delGroupBtn = el("button", {
+    class: "del-group-btn",
+    title: `Delete group "${oldName}"`,
+    onClick: (e) => { e.stopPropagation(); deleteGroup(oldName); },
+  }, "×");
+  header.append(delGroupBtn);
+
+  // --- Group drag-to-reorder (whole groups) ---
+  header.addEventListener("dragstart", (e) => {
+    groupDragState = { name: g };
+    groupEl.classList.add("group-dragging");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", "group:" + g);
+  });
+  header.addEventListener("dragend", () => {
+    groupEl.classList.remove("group-dragging");
+    document.querySelectorAll(".group-drop-before, .group-drop-after").forEach((el2) =>
+      el2.classList.remove("group-drop-before", "group-drop-after"));
+    groupDragState = null;
+  });
+  header.addEventListener("dragover", (e) => {
+    if (!groupDragState || groupDragState.name === g) return;
+    // Only react to GROUP drags, not task drags
+    e.preventDefault();
+    const rect = groupEl.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    groupEl.classList.toggle("group-drop-after", after);
+    groupEl.classList.toggle("group-drop-before", !after);
+  });
+  header.addEventListener("dragleave", () => {
+    groupEl.classList.remove("group-drop-before", "group-drop-after");
+  });
+  header.addEventListener("drop", async (e) => {
+    if (!groupDragState || groupDragState.name === g) return;
+    e.preventDefault();
+    const rect = groupEl.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    await reorderGroups(groupDragState.name, g, after);
+  });
+
+  groupEl.append(header);
+  // Review controls sit between the header and the table, so they read as
+  // "how am I looking at this group" rather than as another row.
+  if (isDoneGrp && !isCollapsed) groupEl.append(buildDoneReviewBar(g, groups[g], rowList));
+
+  if (isCollapsed) {
+    // Collapsed: show only the header (with the count), skip the table entirely.
+    return groupEl;
+  }
+
+  const wrap = el("div", { class: "table-wrap" });
+  // Total width = handle(28) + sum of column widths + actions(70). Setting it
+  // explicitly makes per-column widths exact and enables horizontal scroll.
+  const totalW = 86 + 190 + STATE.columns.reduce((s, c) => s + colWidth(c), 0);
+  const table = el("table", { class: "fixed-cols", style: `width:${totalW}px;min-width:${totalW}px` });
+  const thead = el("thead");
+  const htr = el("tr", { class: "group-colored-head", style: `background:${color}` });
+  htr.append(el("th", { class: "th-handle", style: "width:86px" }));
+  // Column headers — drag the ⠿ handle to reorder; click name to rename; drag right edge to resize.
+  STATE.columns.forEach((c) => {
+    const w = colWidth(c);
+    const th = el("th", { class: c.type === "number" ? "num" : "", style: `width:${w}px`, "data-col": c.id });
+
+    // Reorder handle (not for the primary column — it stays first)
+    if (!c.is_primary) {
+      const movegrip = el("span", { class: "col-move-grip", title: "Drag to reorder column", draggable: "true" }, "⠿");
+      attachColumnReorder(movegrip, th, c);
+      th.append(movegrip);
+    }
+
+    // Personal group override: goal columns are titled Category / Resource
+    // here. Renaming is disabled on these two headers in this group so a
+    // click can't silently rename the board-wide Pillar/Goal columns.
+    const sbOver = c.type === "goal" && typeof sbGroupOverride === "function" && sbGroupOverride(g);
+    const label = el("span", { class: "th-label", title: sbOver ? "Skill Lab " + sbBoardHeaderLabel(c) : "Click to rename column" },
+      sbOver ? sbBoardHeaderLabel(c) : c.name);
+    if (!sbOver) {
+      inlineRename(label, () => c.name, async (newName) => {
+        await api(`/api/columns/${c.id}`, { method: "PATCH", body: JSON.stringify({ name: newName }) });
+        c.name = newName;
+        render();
+      });
+    }
+    th.append(label);
+    // Resize handle on the right edge
+    const grip = el("span", { class: "col-resize-grip", title: "Drag to resize column" });
+    attachColumnResize(grip, th, c);
+    th.append(grip);
+    htr.append(th);
+  });
+  htr.append(el("th", { class: "th-actions", style: "width:190px" }));
+  thead.append(htr);
+  table.append(thead);
+
+  const tbody = el("tbody", { "data-group": g });
+
+  // Builds one task row. `isSub` controls indentation/styling.
+  const buildTaskRow = (t, depth) => {
+    const isSub = depth > 0;
+    const tr = el("tr", { draggable: "true", "data-id": t.id, class: isSub ? "subtask-row" : "" });
+
+    // First cell groups the row controls together to keep rows compact:
+    // drag grip, expand/collapse caret, and add-subtask button. Subtasks can
+    // nest, so EVERY row gets a caret + add-subtask.
+    const handleTd = el("td", { class: "drag-handle-cell" });
+    const controls = el("div", { class: "row-controls" });
+    const grip = el("span", { class: "row-grip", title: "Drag to reorder" }, "⠿");
+    controls.append(grip);
+
+    const kids = childrenOf(t.id);
+    const caret = el("button", {
+      class: "subtask-caret big" + (kids.length ? "" : " empty"),
+      title: kids.length ? "Show / hide subtasks" : "No subtasks yet",
+    }, expandedParents.has(t.id) ? "▾" : "▸");
+    if (kids.length) {
+      caret.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (expandedParents.has(t.id)) expandedParents.delete(t.id);
+        else expandedParents.add(t.id);
+        render();
+      });
+    }
+    controls.append(caret);
+    const addSub = el("button", { class: "add-sub-btn", title: "Add subtask",
+      onClick: (e) => { e.stopPropagation(); addTask(t.group_name, t.id); } }, "+↳");
+    controls.append(addSub);
+    handleTd.append(controls);
+    tr.append(handleTd);
+
+    STATE.columns.forEach((c) => {
+      const td = el("td", { class: c.type === "number" ? "num" : "" });
+      td.append(renderCell(c, t));
+      tr.append(td);
+    });
+
+    // Decorate the primary-column cell: progress badge when there are
+    // children; depth-scaled indent for nested rows.
+    const primaryIdx = STATE.columns.findIndex((c) => c.is_primary);
+    if (primaryIdx >= 0) {
+      const cellTd = tr.children[primaryIdx + 1]; // +1 for the handle cell
+      const prog = subtaskProgress(t.id);
+      if (prog) {
+        cellTd.append(el("span", { class: "subtask-badge", title: `${prog.done} of ${prog.total} subtasks done` },
+          `${prog.done}/${prog.total}`));
+      }
+      if (isSub) {
+        cellTd.classList.add("subtask-cell");
+        cellTd.style.paddingLeft = (8 + depth * 22) + "px";
+      }
+    }
+
+    const delTd = el("td", { class: "row-actions", style: "text-align:center;white-space:nowrap" });
+    delTd.append(buildTimer(t));
+    delTd.append(buildRowMenu(t));
+    delTd.append(el("button", { class: "del-btn", title: "Delete", onClick: () => deleteTask(t.id) }, "×"));
+    tr.append(delTd);
+
+    // --- drag events (reorder within a group OR move to another group) ---
+    if (!isSub) {
+      tr.addEventListener("dragstart", (e) => {
+        dragState = { id: t.id, fromGroup: g };
+        tr.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", t.id);
+      });
+      tr.addEventListener("dragend", () => {
+        tr.classList.remove("dragging");
+        document.querySelectorAll(".drag-over").forEach((r) => r.classList.remove("drag-over"));
+        document.querySelectorAll("tbody.drop-target").forEach((b) => b.classList.remove("drop-target"));
+        dragState = null;
+      });
+      tr.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        if (!dragState) return;
+        const draggingEl = document.querySelector("tr.dragging");
+        // Within the same group: live-reorder by moving the dragged row around.
+        if (dragState.fromGroup === g && draggingEl && draggingEl !== tr) {
+          const rect = tr.getBoundingClientRect();
+          const after = e.clientY > rect.top + rect.height / 2;
+          tbody.querySelectorAll(".drag-over").forEach((r) => r.classList.remove("drag-over"));
+          tr.classList.add("drag-over");
+          if (after) tr.after(draggingEl);
+          else tr.before(draggingEl);
+        }
+      });
+    } else {
+      tr.setAttribute("draggable", "false");
+    }
+
+    tbody.append(tr);
+
+    // Render this row's subtree beneath it when expanded (any depth).
+    // Finished subtasks collapse out of the way; a summary row below keeps
+    // them one click from view so nothing looks lost.
+    if (expandedParents.has(t.id)) {
+      visibleChildrenOf(t.id).forEach((sub) => buildTaskRow(sub, depth + 1));
+      const nHidden = hiddenDoneCount(t.id);
+      if (nHidden) {
+        const htr = el("tr", { class: "subs-done-row" });
+        const pad = el("td", { class: "handle-cell" });
+        htr.append(pad);
+        const td = el("td", { colspan: String(STATE.columns.length + 1) });
+        const btn = el("button", { class: "subs-done-toggle",
+          style: `margin-left:${18 + depth * 22}px`,
+          title: "Show the finished subtasks again",
+          onClick: (e) => { e.stopPropagation(); revealDoneSubs.add(t.id); render(); } },
+          `\u2713 ${nHidden} done \u00B7 show`);
+        td.append(btn);
+        htr.append(td);
+        tbody.append(htr);
+      } else if (revealDoneSubs.has(t.id) && childrenOf(t.id).some(isDoneStatus)) {
+        const htr = el("tr", { class: "subs-done-row" });
+        htr.append(el("td", { class: "handle-cell" }));
+        const td = el("td", { colspan: String(STATE.columns.length + 1) });
+        td.append(el("button", { class: "subs-done-toggle",
+          style: `margin-left:${18 + depth * 22}px`,
+          title: "Collapse the finished subtasks again",
+          onClick: (e) => { e.stopPropagation(); revealDoneSubs.delete(t.id); render(); } },
+          "\u2713 hide done"));
+        htr.append(td);
+        tbody.append(htr);
+      }
+    }
+  };
+
+  rowList.forEach((t) => buildTaskRow(t, 0));
+
+  // Allow dropping onto this group's body — highlights when a task from a
+  // DIFFERENT group is hovering, so it's clear it'll move here.
+  tbody.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (dragState && dragState.fromGroup !== g) {
+      tbody.classList.add("drop-target");
+    }
+  });
+  tbody.addEventListener("dragleave", (e) => {
+    // Only clear when actually leaving the tbody (not moving between its rows)
+    if (!tbody.contains(e.relatedTarget)) tbody.classList.remove("drop-target");
+  });
+
+  // On drop: if the task came from another group, move it here; otherwise
+  // persist the reordered positions within this group.
+  tbody.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    tbody.querySelectorAll(".drag-over").forEach((r) => r.classList.remove("drag-over"));
+    tbody.classList.remove("drop-target");
+    if (dragState && dragState.fromGroup !== g) {
+      const movedId = dragState.id;
+      dragState = null;
+      await moveTaskToGroup(movedId, g);  // reassign group + re-render
+    } else {
+      await persistGroupOrder(tbody, g);
+    }
+  });
+
+  table.append(tbody);
+  wrap.append(table);
+  groupEl.append(wrap);
+  groupEl.append(buildGroupTimeTotals(groups[g]));
+  groupEl.append(el("div", { class: "add-task", onClick: () => addTask(g) }, "+ Add task"));
+  return groupEl;
+}
+
 function renderTable() {
   const board = $("#board");
   const tasks = filteredTasks();
@@ -659,338 +1049,7 @@ function renderTable() {
     return pa - pb;
   });
 
-  orderedGroupNames.forEach((g, gi) => {
-    // Defensive: never let an empty/undefined group name render as a blank or
-    // the literal word "undefined" — show a clear placeholder instead.
-    const safeOldName = g && g !== "undefined" && g !== "null" ? g : "(unnamed group)";
-    const oldName = safeOldName;  // explicit snapshot for the closure (defense in depth)
-    const color = groupColor(g, gi);
-    const groupEl = el("div", { class: "group", "data-group": g });
-    const isCollapsed = collapsedGroups.has(g);
-    // Done-style groups get review controls; rows come from the filtered list.
-    const isDoneGrp = isDoneReviewGroup(groups[g]);
-    const rowList = isDoneGrp ? doneReviewList(groups[g]) : groups[g];
-
-    // Group header — collapse caret, color dot, name, count, delete.
-    // The header is draggable to reorder whole groups.
-    const header = el("div", { class: "group-header", style: `border-left-color:${color}`, draggable: "true" });
-
-    // Collapse/expand caret (hides the group's table, leaving just the header)
-    const collapseCaret = el("button", { class: "group-collapse-caret", title: isCollapsed ? "Expand group" : "Collapse group" },
-      isCollapsed ? "▸" : "▾");
-    collapseCaret.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (collapsedGroups.has(g)) collapsedGroups.delete(g);
-      else collapsedGroups.add(g);
-      render();
-    });
-    header.append(collapseCaret);
-
-    // Color dot
-    const dot = el("button", { class: "group-color-dot", title: "Change group color", style: `background:${color}` });
-    dot.addEventListener("click", (e) => { e.stopPropagation(); openGroupColorPicker(g, dot); });
-    header.append(dot);
-
-    const gname = el("span", { class: "gname", style: `color:${color}`, title: "Click to rename" }, oldName);
-    inlineRename(gname, () => oldName, async (newName) => {
-      console.log("[rename group]", { oldName, newName, originalKey: g });
-      if (!oldName || !newName || oldName === newName || newName === "undefined" || newName === "null") {
-        console.warn("[rename group] skipped — invalid input:", { oldName, newName });
-        return;
-      }
-      const dbOldName = g;
-      try {
-        const resp = await api("/api/groups/rename", {
-          method: "PATCH",
-          body: JSON.stringify({ old: dbOldName, new: newName }),
-        });
-        console.log("[rename group] server response:", resp);
-        STATE.tasks.forEach((t) => { if (t.group_name === dbOldName) t.group_name = newName; });
-        STATE.automations.forEach((a) => { if (a.action_type === "moveToGroup" && a.action_val === dbOldName) a.action_val = newName; });
-        // carry custom color + order + collapse state to the new name locally
-        if (STATE.group_colors[dbOldName]) {
-          STATE.group_colors[newName] = STATE.group_colors[dbOldName];
-          delete STATE.group_colors[dbOldName];
-        }
-        if (STATE.group_order[dbOldName] != null) {
-          STATE.group_order[newName] = STATE.group_order[dbOldName];
-          delete STATE.group_order[dbOldName];
-        }
-        if (collapsedGroups.has(dbOldName)) { collapsedGroups.delete(dbOldName); collapsedGroups.add(newName); }
-        render();
-      } catch (err) {
-        console.error("[rename group] failed:", err);
-      }
-    });
-    header.append(gname);
-    header.append(el("span", { class: "gcount" },
-      isDoneGrp && rowList.length !== groups[g].length
-        ? `${rowList.length} of ${groups[g].length}`
-        : `${groups[g].length} item${groups[g].length !== 1 ? "s" : ""}`));
-    // Delete-group button (×) — confirms, then either deletes all its tasks or moves them
-    const delGroupBtn = el("button", {
-      class: "del-group-btn",
-      title: `Delete group "${oldName}"`,
-      onClick: (e) => { e.stopPropagation(); deleteGroup(oldName); },
-    }, "×");
-    header.append(delGroupBtn);
-
-    // --- Group drag-to-reorder (whole groups) ---
-    header.addEventListener("dragstart", (e) => {
-      groupDragState = { name: g };
-      groupEl.classList.add("group-dragging");
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", "group:" + g);
-    });
-    header.addEventListener("dragend", () => {
-      groupEl.classList.remove("group-dragging");
-      document.querySelectorAll(".group-drop-before, .group-drop-after").forEach((el2) =>
-        el2.classList.remove("group-drop-before", "group-drop-after"));
-      groupDragState = null;
-    });
-    header.addEventListener("dragover", (e) => {
-      if (!groupDragState || groupDragState.name === g) return;
-      // Only react to GROUP drags, not task drags
-      e.preventDefault();
-      const rect = groupEl.getBoundingClientRect();
-      const after = e.clientY > rect.top + rect.height / 2;
-      groupEl.classList.toggle("group-drop-after", after);
-      groupEl.classList.toggle("group-drop-before", !after);
-    });
-    header.addEventListener("dragleave", () => {
-      groupEl.classList.remove("group-drop-before", "group-drop-after");
-    });
-    header.addEventListener("drop", async (e) => {
-      if (!groupDragState || groupDragState.name === g) return;
-      e.preventDefault();
-      const rect = groupEl.getBoundingClientRect();
-      const after = e.clientY > rect.top + rect.height / 2;
-      await reorderGroups(groupDragState.name, g, after);
-    });
-
-    groupEl.append(header);
-    // Review controls sit between the header and the table, so they read as
-    // "how am I looking at this group" rather than as another row.
-    if (isDoneGrp && !isCollapsed) groupEl.append(buildDoneReviewBar(g, groups[g], rowList));
-
-    if (isCollapsed) {
-      // Collapsed: show only the header (with the count), skip the table entirely.
-      board.append(groupEl);
-      return;
-    }
-
-    const wrap = el("div", { class: "table-wrap" });
-    // Total width = handle(28) + sum of column widths + actions(70). Setting it
-    // explicitly makes per-column widths exact and enables horizontal scroll.
-    const totalW = 86 + 190 + STATE.columns.reduce((s, c) => s + colWidth(c), 0);
-    const table = el("table", { class: "fixed-cols", style: `width:${totalW}px;min-width:${totalW}px` });
-    const thead = el("thead");
-    const htr = el("tr", { class: "group-colored-head", style: `background:${color}` });
-    htr.append(el("th", { class: "th-handle", style: "width:86px" }));
-    // Column headers — drag the ⠿ handle to reorder; click name to rename; drag right edge to resize.
-    STATE.columns.forEach((c) => {
-      const w = colWidth(c);
-      const th = el("th", { class: c.type === "number" ? "num" : "", style: `width:${w}px`, "data-col": c.id });
-
-      // Reorder handle (not for the primary column — it stays first)
-      if (!c.is_primary) {
-        const movegrip = el("span", { class: "col-move-grip", title: "Drag to reorder column", draggable: "true" }, "⠿");
-        attachColumnReorder(movegrip, th, c);
-        th.append(movegrip);
-      }
-
-      // Personal group override: goal columns are titled Category / Resource
-      // here. Renaming is disabled on these two headers in this group so a
-      // click can't silently rename the board-wide Pillar/Goal columns.
-      const sbOver = c.type === "goal" && typeof sbGroupOverride === "function" && sbGroupOverride(g);
-      const label = el("span", { class: "th-label", title: sbOver ? "Skill Lab " + sbBoardHeaderLabel(c) : "Click to rename column" },
-        sbOver ? sbBoardHeaderLabel(c) : c.name);
-      if (!sbOver) {
-        inlineRename(label, () => c.name, async (newName) => {
-          await api(`/api/columns/${c.id}`, { method: "PATCH", body: JSON.stringify({ name: newName }) });
-          c.name = newName;
-          render();
-        });
-      }
-      th.append(label);
-      // Resize handle on the right edge
-      const grip = el("span", { class: "col-resize-grip", title: "Drag to resize column" });
-      attachColumnResize(grip, th, c);
-      th.append(grip);
-      htr.append(th);
-    });
-    htr.append(el("th", { class: "th-actions", style: "width:190px" }));
-    thead.append(htr);
-    table.append(thead);
-
-    const tbody = el("tbody", { "data-group": g });
-
-    // Builds one task row. `isSub` controls indentation/styling.
-    const buildTaskRow = (t, depth) => {
-      const isSub = depth > 0;
-      const tr = el("tr", { draggable: "true", "data-id": t.id, class: isSub ? "subtask-row" : "" });
-
-      // First cell groups the row controls together to keep rows compact:
-      // drag grip, expand/collapse caret, and add-subtask button. Subtasks can
-      // nest, so EVERY row gets a caret + add-subtask.
-      const handleTd = el("td", { class: "drag-handle-cell" });
-      const controls = el("div", { class: "row-controls" });
-      const grip = el("span", { class: "row-grip", title: "Drag to reorder" }, "⠿");
-      controls.append(grip);
-
-      const kids = childrenOf(t.id);
-      const caret = el("button", {
-        class: "subtask-caret big" + (kids.length ? "" : " empty"),
-        title: kids.length ? "Show / hide subtasks" : "No subtasks yet",
-      }, expandedParents.has(t.id) ? "▾" : "▸");
-      if (kids.length) {
-        caret.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (expandedParents.has(t.id)) expandedParents.delete(t.id);
-          else expandedParents.add(t.id);
-          render();
-        });
-      }
-      controls.append(caret);
-      const addSub = el("button", { class: "add-sub-btn", title: "Add subtask",
-        onClick: (e) => { e.stopPropagation(); addTask(t.group_name, t.id); } }, "+↳");
-      controls.append(addSub);
-      handleTd.append(controls);
-      tr.append(handleTd);
-
-      STATE.columns.forEach((c) => {
-        const td = el("td", { class: c.type === "number" ? "num" : "" });
-        td.append(renderCell(c, t));
-        tr.append(td);
-      });
-
-      // Decorate the primary-column cell: progress badge when there are
-      // children; depth-scaled indent for nested rows.
-      const primaryIdx = STATE.columns.findIndex((c) => c.is_primary);
-      if (primaryIdx >= 0) {
-        const cellTd = tr.children[primaryIdx + 1]; // +1 for the handle cell
-        const prog = subtaskProgress(t.id);
-        if (prog) {
-          cellTd.append(el("span", { class: "subtask-badge", title: `${prog.done} of ${prog.total} subtasks done` },
-            `${prog.done}/${prog.total}`));
-        }
-        if (isSub) {
-          cellTd.classList.add("subtask-cell");
-          cellTd.style.paddingLeft = (8 + depth * 22) + "px";
-        }
-      }
-
-      const delTd = el("td", { class: "row-actions", style: "text-align:center;white-space:nowrap" });
-      delTd.append(buildTimer(t));
-      delTd.append(buildRowMenu(t));
-      delTd.append(el("button", { class: "del-btn", title: "Delete", onClick: () => deleteTask(t.id) }, "×"));
-      tr.append(delTd);
-
-      // --- drag events (reorder within a group OR move to another group) ---
-      if (!isSub) {
-        tr.addEventListener("dragstart", (e) => {
-          dragState = { id: t.id, fromGroup: g };
-          tr.classList.add("dragging");
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", t.id);
-        });
-        tr.addEventListener("dragend", () => {
-          tr.classList.remove("dragging");
-          document.querySelectorAll(".drag-over").forEach((r) => r.classList.remove("drag-over"));
-          document.querySelectorAll("tbody.drop-target").forEach((b) => b.classList.remove("drop-target"));
-          dragState = null;
-        });
-        tr.addEventListener("dragover", (e) => {
-          e.preventDefault();
-          if (!dragState) return;
-          const draggingEl = document.querySelector("tr.dragging");
-          // Within the same group: live-reorder by moving the dragged row around.
-          if (dragState.fromGroup === g && draggingEl && draggingEl !== tr) {
-            const rect = tr.getBoundingClientRect();
-            const after = e.clientY > rect.top + rect.height / 2;
-            tbody.querySelectorAll(".drag-over").forEach((r) => r.classList.remove("drag-over"));
-            tr.classList.add("drag-over");
-            if (after) tr.after(draggingEl);
-            else tr.before(draggingEl);
-          }
-        });
-      } else {
-        tr.setAttribute("draggable", "false");
-      }
-
-      tbody.append(tr);
-
-      // Render this row's subtree beneath it when expanded (any depth).
-      // Finished subtasks collapse out of the way; a summary row below keeps
-      // them one click from view so nothing looks lost.
-      if (expandedParents.has(t.id)) {
-        visibleChildrenOf(t.id).forEach((sub) => buildTaskRow(sub, depth + 1));
-        const nHidden = hiddenDoneCount(t.id);
-        if (nHidden) {
-          const htr = el("tr", { class: "subs-done-row" });
-          const pad = el("td", { class: "handle-cell" });
-          htr.append(pad);
-          const td = el("td", { colspan: String(STATE.columns.length + 1) });
-          const btn = el("button", { class: "subs-done-toggle",
-            style: `margin-left:${18 + depth * 22}px`,
-            title: "Show the finished subtasks again",
-            onClick: (e) => { e.stopPropagation(); revealDoneSubs.add(t.id); render(); } },
-            `\u2713 ${nHidden} done \u00B7 show`);
-          td.append(btn);
-          htr.append(td);
-          tbody.append(htr);
-        } else if (revealDoneSubs.has(t.id) && childrenOf(t.id).some(isDoneStatus)) {
-          const htr = el("tr", { class: "subs-done-row" });
-          htr.append(el("td", { class: "handle-cell" }));
-          const td = el("td", { colspan: String(STATE.columns.length + 1) });
-          td.append(el("button", { class: "subs-done-toggle",
-            style: `margin-left:${18 + depth * 22}px`,
-            title: "Collapse the finished subtasks again",
-            onClick: (e) => { e.stopPropagation(); revealDoneSubs.delete(t.id); render(); } },
-            "\u2713 hide done"));
-          htr.append(td);
-          tbody.append(htr);
-        }
-      }
-    };
-
-    rowList.forEach((t) => buildTaskRow(t, 0));
-
-    // Allow dropping onto this group's body — highlights when a task from a
-    // DIFFERENT group is hovering, so it's clear it'll move here.
-    tbody.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      if (dragState && dragState.fromGroup !== g) {
-        tbody.classList.add("drop-target");
-      }
-    });
-    tbody.addEventListener("dragleave", (e) => {
-      // Only clear when actually leaving the tbody (not moving between its rows)
-      if (!tbody.contains(e.relatedTarget)) tbody.classList.remove("drop-target");
-    });
-
-    // On drop: if the task came from another group, move it here; otherwise
-    // persist the reordered positions within this group.
-    tbody.addEventListener("drop", async (e) => {
-      e.preventDefault();
-      tbody.querySelectorAll(".drag-over").forEach((r) => r.classList.remove("drag-over"));
-      tbody.classList.remove("drop-target");
-      if (dragState && dragState.fromGroup !== g) {
-        const movedId = dragState.id;
-        dragState = null;
-        await moveTaskToGroup(movedId, g);  // reassign group + re-render
-      } else {
-        await persistGroupOrder(tbody, g);
-      }
-    });
-
-    table.append(tbody);
-    wrap.append(table);
-    groupEl.append(wrap);
-    groupEl.append(buildGroupTimeTotals(groups[g]));
-    groupEl.append(el("div", { class: "add-task", onClick: () => addTask(g) }, "+ Add task"));
-    board.append(groupEl);
-  });
+  orderedGroupNames.forEach((g, gi) => board.append(buildGroupSection(g, gi, groups)));
 }
 
 // A small footer under each group summarizing estimated vs. actual time and the

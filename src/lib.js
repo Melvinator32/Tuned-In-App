@@ -224,7 +224,10 @@ export async function descendantIds(db, taskId) {
 export async function deleteTaskTree(db, taskId) {
   const ids = [taskId, ...(await descendantIds(db, taskId))];
   await run(db, `DELETE FROM tasks WHERE id IN (${placeholders(ids.length)})`, ...ids);
-  return ids.length;
+  // The ids, not the count: a caller reporting what changed has to be able to
+  // name what went. `.length` still reads as the count for callers that only
+  // wanted that.
+  return ids;
 }
 
 /** Set or clear the completion-date stamp based on whether any status column
