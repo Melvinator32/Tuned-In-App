@@ -793,10 +793,16 @@ function buildGroupSection(g, gi, groups) {
   }
 
   const wrap = el("div", { class: "table-wrap" });
-  // Total width = handle(28) + sum of column widths + actions(70). Setting it
-  // explicitly makes per-column widths exact and enables horizontal scroll.
+  // The columns' own widths added up: handle + every column + the actions cell.
+  // As a minimum it keeps each column exactly as wide as it was set and lets the
+  // table scroll sideways when the screen is too narrow for them all.
+  //
+  // As a fixed width it also stopped the table dead at that size, so on a wide
+  // screen the rows ended mid-card with a band of empty space to their right,
+  // looking cut off. It is the floor now, not the size: past it the table fills
+  // whatever room there is and the columns share out the slack.
   const totalW = 86 + 190 + STATE.columns.reduce((s, c) => s + colWidth(c), 0);
-  const table = el("table", { class: "fixed-cols", style: `width:${totalW}px;min-width:${totalW}px` });
+  const table = el("table", { class: "fixed-cols", style: `width:100%;min-width:${totalW}px` });
   const thead = el("thead");
   const htr = el("tr", { class: "group-colored-head", style: `background:${color}` });
   htr.append(el("th", { class: "th-handle", style: "width:86px" }));
