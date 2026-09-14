@@ -117,24 +117,26 @@
 		// so testing a migration there would run it against the testers' own
 		// boards. This one has a database nobody else is in.
 		//
-		// Its Access application needs its own AUD - an AUD identifies one
-		// application, so reusing the live one would mean a session for either
-		// Worker opened both. ACCESS_AUD below is filled in after the application
-		// exists; until then the Worker stays single-tenant and answers 500, which
-		// is the safe way round.
+		// No sign-in here. With no ACCESS_* set the Worker runs single-tenant and
+		// serves whatever is bound as "DB", so staging is one board that opens
+		// straight away - the same build the testers get, without a login between
+		// you and it.
+		//
+		// The board is therefore readable and writable by anyone who has the URL.
+		// That is deliberate for a scratch copy with no real work in it; if it ever
+		// holds anything worth keeping, put an Access application in front and
+		// rename this binding back to DB_1 so per-user routing takes over.
 		"staging": {
 			"d1_databases": [
 				{
-					"binding": "DB_1",
+					"binding": "DB",
 					"database_name": "tuned-in-staging",
 					"database_id": "c177aade-fb40-4955-a416-1ae398fdd662",
 					"migrations_dir": "migrations"
 				}
 			],
 			"vars": {
-				"TZ": "America/Chicago",
-				"ACCESS_TEAM_DOMAIN": "super-band-37db.cloudflareaccess.com",
-				"ACCESS_AUD": ""
+				"TZ": "America/Chicago"
 			},
 			"observability": {
 				"enabled": true
