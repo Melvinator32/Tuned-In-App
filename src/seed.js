@@ -159,24 +159,13 @@ export async function ensureSeeded(env) {
   await db.prepare(
     "UPDATE columns SET name = 'Values' WHERE type = 'goal' AND lower(name) = 'pillar'").run();
 
-  // Win / Loss check columns for closing out goals. Detected by type + name,
-  // appended after existing columns, no rows touched.
-  const checks = await all(db, "SELECT name FROM columns WHERE type = 'check'");
-  const have = new Set(checks.map((r) => String(r.name).trim().toLowerCase()));
-  if (!have.has("win") || !have.has("loss")) {
-    const row = await first(db, "SELECT COALESCE(MAX(position), 0) AS p FROM columns");
-    let pos = row ? row.p : 0;
-    const st = [];
-    if (!have.has("win")) {
-      st.push(db.prepare("INSERT INTO columns (id, name, type, is_primary, position) VALUES (?,?,?,0,?)")
-        .bind("c_win_" + uid(), "Win", "check", ++pos));
-    }
-    if (!have.has("loss")) {
-      st.push(db.prepare("INSERT INTO columns (id, name, type, is_primary, position) VALUES (?,?,?,0,?)")
-        .bind("c_loss_" + uid(), "Loss", "check", ++pos));
-    }
-    await batched(db, st);
-  }
+  // No Win / Loss columns. They used to be created here, and re-created on every
+  // request whenever they were missing - which also meant deleting them in the
+  // app did not stick, because the next page load put them back.
+  //
+  // Check columns themselves still work: add one called "Loss" and the outcome
+  // handling in public/static/board.js picks it up by type and name, exactly as
+  // before. This only stops the app deciding for you that you wanted them.
 
   // Rescue cleanup: earlier frontend code could in rare cases write a corrupted
   // group_name (empty string, the literal text "undefined", or "null"). Sweep

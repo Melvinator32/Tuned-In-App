@@ -52,12 +52,18 @@ section("static assets");
 // ---------------------------------------------------------------- state + seed
 section("state and first-run seed");
 let state = (await api("/api/state")).json;
-check("columns seeded", state.columns.length === 10, `${state.columns.length} columns`);
+// Named rather than counted, so a change to the seed says which column moved
+// instead of just that the number did.
+check("columns seeded",
+  state.columns.map((c) => c.name).join() ===
+    "Task,Status,Owner,Due Date,Priority,Est. Hours,Values,Goal",
+  state.columns.map((c) => c.name).join());
 check("Values + Goal columns present",
   state.columns.some((c) => c.name === "Values" && c.type === "goal") &&
   state.columns.some((c) => c.name === "Goal" && c.type === "goal"));
-check("Win/Loss check columns present",
-  state.columns.filter((c) => c.type === "check").map((c) => c.name).sort().join() === "Loss,Win");
+check("no Win/Loss columns are created for you",
+  state.columns.filter((c) => c.type === "check").length === 0,
+  state.columns.filter((c) => c.type === "check").map((c) => c.name).join());
 check("tasks seeded", state.tasks.length === 10, `${state.tasks.length} tasks`);
 check("groups seeded", Object.keys(state.group_order).length === 7);
 check("no Commercial Models group", !Object.keys(state.group_order).includes("Commercial Models"));
