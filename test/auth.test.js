@@ -87,6 +87,29 @@ test("a half-configured deployment is single-tenant, not broken", async () => {
   assert.equal(await scopeToUser(req(), env), env, "must be the same object, not a copy");
 });
 
+test("no two people can be routed to the same board", () => {
+  // A typo here would be a data leak rather than a crash: two addresses on one
+  // binding means two people opening each other's board, and nothing at
+  // runtime would look wrong. The check is on the shape of the directory, so it
+  // holds for whatever addresses are actually configured.
+  const directory = parseDirectory(JSON.stringify({
+    "a@example.com": "DB_1",
+    "b@example.com": "DB_2",
+    "c@example.com": "DB_3",
+    "d@example.com": "DB_4",
+  }));
+  const bindings = Object.values(directory);
+  assert.equal(new Set(bindings).size, bindings.length,
+    "two addresses share a binding: " + bindings.join(", "));
+});
+
+test("the same person is the same board however they capitalise it", () => {
+  // Signing in from a phone keyboard that capitalises the first letter has to
+  // reach the same database as signing in from a laptop.
+  const directory = parseDirectory(JSON.stringify({ "Someone@Example.COM": "DB_7" }));
+  assert.equal(directory["someone@example.com"], "DB_7");
+});
+
 test("team domain is accepted with or without the scheme", () => {
   assert.equal(teamUrl(TEAM), ISSUER);
   assert.equal(teamUrl(ISSUER), ISSUER);
