@@ -3,7 +3,7 @@
   "version": "2026.8.21",
   "private": true,
   "type": "module",
-  "description": "Tuned In — a flexible task board, running on Cloudflare Workers + D1.",
+  "description": "Tuned In \u2014 a flexible task board, running on Cloudflare Workers + D1.",
   "license": "SEE LICENSE IN LICENSE.txt",
   "scripts": {
     "dev:demo": "node scripts/build-profile.mjs default && wrangler dev --env demo",
@@ -21,7 +21,11 @@
     "deploy:app": "npm test && node scripts/build-profile.mjs default && wrangler deploy --env app && npm run verify:app",
     "dev:app": "node scripts/build-profile.mjs default && wrangler dev --env app",
     "db:migrate:app": "node scripts/migrate-all.mjs app",
-    "db:migrate:app:local": "node scripts/migrate-all.mjs app --local"
+    "db:migrate:app:local": "node scripts/migrate-all.mjs app --local",
+    "dev:staging": "node scripts/build-profile.mjs default && wrangler dev --env staging",
+    "deploy:staging": "npm test && node scripts/build-profile.mjs default && wrangler deploy --env staging && npm run verify:staging",
+    "verify:staging": "node scripts/verify-deploy.mjs --target staging",
+    "db:migrate:staging": "node scripts/migrate-all.mjs staging"
   },
   "devDependencies": {
     "wrangler": "^4.28.0"

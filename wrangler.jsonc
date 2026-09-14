@@ -90,12 +90,51 @@
 					"database_name": "tuned-in-user-3",
 					"database_id": "f7f9772e-79ae-490a-a28e-8e954054e475",
 					"migrations_dir": "migrations"
+				},
+				{
+					"binding": "DB_4",
+					"database_name": "tuned-in-user-4",
+					"database_id": "a399b8a9-5d90-4af7-9faf-27ac66607cbc",
+					"migrations_dir": "migrations"
 				}
 			],
 			"vars": {
 				"TZ": "America/Chicago",
 				"ACCESS_TEAM_DOMAIN": "super-band-37db.cloudflareaccess.com",
 				"ACCESS_AUD": "43dfe1e983790825f58b663931dbfe3b72a7088096527aae444d76fe64aa6e1b"
+			},
+			"observability": {
+				"enabled": true
+			}
+		},
+
+		// Staging: the same app, deployed somewhere the testers cannot reach, so a
+		// change can be used on a real phone behind real Access before anyone else
+		// sees it.
+		//
+		// The point of a whole separate Worker rather than a preview URL is this
+		// database. A preview version of the live Worker shares the live bindings,
+		// so testing a migration there would run it against the testers' own
+		// boards. This one has a database nobody else is in.
+		//
+		// Its Access application needs its own AUD - an AUD identifies one
+		// application, so reusing the live one would mean a session for either
+		// Worker opened both. ACCESS_AUD below is filled in after the application
+		// exists; until then the Worker stays single-tenant and answers 500, which
+		// is the safe way round.
+		"staging": {
+			"d1_databases": [
+				{
+					"binding": "DB_1",
+					"database_name": "tuned-in-staging",
+					"database_id": "c177aade-fb40-4955-a416-1ae398fdd662",
+					"migrations_dir": "migrations"
+				}
+			],
+			"vars": {
+				"TZ": "America/Chicago",
+				"ACCESS_TEAM_DOMAIN": "super-band-37db.cloudflareaccess.com",
+				"ACCESS_AUD": ""
 			},
 			"observability": {
 				"enabled": true
