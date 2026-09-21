@@ -633,6 +633,16 @@ tbody tr.subtask-row .row-grip { color: transparent; cursor: default; }
 .today-block.compact .today-block-del { width: 16px; height: 16px; font-size: 11px; }
 
 /* ---- Eisenhower matrix ---- */
+/* Sort control on Prioritize. Reads as off until it is on, so the board never
+   looks sorted when it is showing your own order. */
+.mx-sort-lab { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--mid-gray); }
+.mx-sort {
+  font-size: 12px; padding: 2px 6px; border-radius: 6px;
+  border: 1px solid var(--light-gray); background: var(--surface); color: var(--mid-gray);
+}
+.mx-sort.on { color: var(--ink); border-color: var(--sage); font-weight: 600; }
+@media (max-width: 620px) { .mx-sort, .mx-sort-lab { font-size: 13px; } .mx-sort { padding: 4px 7px; } }
+
 .mx-quad-pick {
   font-size: 11px; padding: 1px 4px; border-radius: 6px; max-width: 8.5em;
   border: 1px solid var(--light-gray); background: var(--surface); color: var(--mid-gray);

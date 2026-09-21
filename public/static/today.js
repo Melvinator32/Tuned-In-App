@@ -622,10 +622,53 @@ function eisRank(t) {
   const v = Number(t.cells[EIS_RANK_KEY]);
   return Number.isFinite(v) && t.cells[EIS_RANK_KEY] !== "" && t.cells[EIS_RANK_KEY] != null ? v : Infinity;
 }
+// How the chips inside a quadrant are ordered. Dragging is the default and
+// stays the default - it is the only order the board remembers. The rest are
+// ways of reading the same quadrant without disturbing that: switch back to
+// Manual and your own order is exactly where you left it.
+const MX_SORTS = [
+  ["manual",   "Manual order"],
+  ["priority", "Priority"],
+  ["due",      "Due date"],
+  ["longest",  "Longest first"],
+  ["shortest", "Shortest first"],
+  ["name",     "Name A–Z"],
+];
+let mxSort = (() => { try { return localStorage.getItem("rs_mx_sort") || "manual"; } catch (e) { return "manual"; } })();
+function mxSortLabel(k) { const s = MX_SORTS.find((x) => x[0] === k); return s ? s[1] : k; }
+
+// Priority order comes from the palette, so a renamed or reordered priority
+// list sorts the way the board shows it rather than by a list copied in here.
+function mxPrioRank(t) {
+  const col = STATE.columns.find((c) => c.type === "priority");
+  const v = col ? String(t.cells[col.id] || "") : "";
+  if (!v) return 999;                               // unset sinks below set
+  const list = (STATE.palette && STATE.palette.priority) || [];
+  const at = list.findIndex((p) => p.label === v);
+  return at === -1 ? 998 : at;
+}
+function mxName(t) {
+  const pc = primaryCol();
+  return String((pc && t.cells[pc.id]) || "").toLowerCase();
+}
+
+/** Comparators. Each falls back to the manual rank so ties keep a stable,
+ *  familiar order rather than shuffling on every render. */
+const MX_COMPARE = {
+  priority: (a, b) => mxPrioRank(a) - mxPrioRank(b),
+  due:      (a, b) => (dueRank(a) < dueRank(b) ? -1 : dueRank(a) > dueRank(b) ? 1 : 0),
+  longest:  (a, b) => estOrDefault(b) - estOrDefault(a),
+  shortest: (a, b) => estOrDefault(a) - estOrDefault(b),
+  name:     (a, b) => mxName(a).localeCompare(mxName(b)),
+};
+
 function quadOrdered(tasks, key) {
+  const cmp = MX_COMPARE[mxSort];
   return tasks.filter((t) => eisQuadOf(t) === key)
               .map((t, i) => [t, i])
-              .sort((a, b) => (eisRank(a[0]) - eisRank(b[0])) || (a[1] - b[1]))
+              .sort((a, b) => (cmp ? cmp(a[0], b[0]) : 0)
+                           || (eisRank(a[0]) - eisRank(b[0]))
+                           || (a[1] - b[1]))
               .map((x) => x[0]);
 }
 // Renumber a quadrant 0..n-1 after a move, so ranks stay dense and comparable.
@@ -676,10 +719,15 @@ function makeMatrixChip(t, inQuadrant) {
       moved.cells["__eis"] = destQuad;
       await updateCell(movedId, "__eis", destQuad);
     }
-    const order = quadOrdered(matrixTasks(), destQuad).filter((x) => x.id !== movedId);
-    const at = order.findIndex((x) => x.id === t.id);
-    order.splice(at < 0 ? order.length : at + (after ? 1 : 0), 0, moved);
-    await eisRenumber(order);
+    // Only renumber when manual order is what is on screen. Doing it under a
+    // sort would rewrite the order arranged by hand to match a view the user is
+    // about to switch away from.
+    if (mxSort === "manual") {
+      const order = quadOrdered(matrixTasks(), destQuad).filter((x) => x.id !== movedId);
+      const at = order.findIndex((x) => x.id === t.id);
+      order.splice(at < 0 ? order.length : at + (after ? 1 : 0), 0, moved);
+      await eisRenumber(order);
+    }
     render();
   });
   chip.append(el("span", { class: "today-chip-grip" }, "⠿"));
@@ -717,7 +765,8 @@ function makeMatrixChip(t, inQuadrant) {
     t.cells["__eis"] = dest;
     await updateCell(t.id, "__eis", dest);
     // Land it at the end of wherever it went, so it does not jump the queue.
-    await eisRenumber(quadOrdered(matrixTasks(), dest));
+    // Under a sort there is no queue to jump: the sort decides the order.
+    if (mxSort === "manual") await eisRenumber(quadOrdered(matrixTasks(), dest));
     render();
   });
   chip.append(quadPick);
@@ -805,8 +854,10 @@ function renderMatrix() {
   left.append(unsortedZone);
   // Two hints, one shown at a time by CSS. Telling someone on a phone to drag a
   // task into a quadrant is telling them to do the thing that does not work.
-  left.append(el("p", { class: "today-tip mx-hint-drag" },
-    "Drag a task into a quadrant →  (drag back here to unsort)"));
+  left.append(el("p", { class: "today-tip mx-hint-drag" }, mxSort === "manual"
+    ? "Drag a task into a quadrant →  (drag back here to unsort)"
+    : "Sorted by " + mxSortLabel(mxSort).toLowerCase()
+      + " — drag still moves a task between quadrants; choose Manual order to arrange them yourself"));
   left.append(el("p", { class: "today-tip mx-hint-touch" },
     "Tag each task above, then swipe left to see the matrix →"));
 
@@ -833,6 +884,20 @@ function renderMatrix() {
   const mxBar = el("div", { class: "mx-actions" });
   mxBar.append(el("button", { class: "tool-btn", title: "Send every sorted task back to Unsorted (estimates are kept)",
     onClick: clearMatrix }, "Clear priorities"));
+
+  const sortSel = el("select", { class: "mx-sort" + (mxSort === "manual" ? "" : " on"),
+    title: "How chips are ordered inside each quadrant" });
+  MX_SORTS.forEach(([k, label]) => {
+    sortSel.append(el("option",
+      Object.assign({ value: k }, k === mxSort ? { selected: "selected" } : {}), label));
+  });
+  sortSel.addEventListener("change", () => {
+    mxSort = sortSel.value;
+    try { localStorage.setItem("rs_mx_sort", mxSort); } catch (e) {}
+    $("#board").innerHTML = "";
+    render();
+  });
+  mxBar.append(el("label", { class: "mx-sort-lab" }, "Sort ", sortSel));
   const totalEst = tasks.filter((t) => t.cells["__eis"] && t.cells["__eis"] !== "eliminate")
                         .reduce((s, t) => s + estOrDefault(t), 0);
   if (totalEst) mxBar.append(el("span", { class: "mx-total", title: "Everything sorted, minus Eliminate" }, fmtDur(totalEst) + " planned"));
