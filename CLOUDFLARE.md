@@ -225,8 +225,9 @@ about to overwrite before using it:
 npx wrangler d1 execute tuned-in --remote --command "SELECT (SELECT COUNT(*) FROM tasks) AS tasks, (SELECT COUNT(*) FROM settings) AS settings"
 ```
 
-Nine tasks, ten columns and two settings is the untouched demo seed. Anything
-else is real and worth keeping.
+74 tasks, eight columns and two settings (`goals_os`, `tunedin_rename`) is the
+untouched demo seed — the coaching client training for a half marathon from
+`src/demo.js`. Anything else is real and worth keeping.
 
 **Pick the newest source file.** The repo carries dated backups alongside
 `radio_station.db`; they are not always in the order the names suggest. Compare

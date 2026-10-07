@@ -7,11 +7,12 @@
    board has columns. */
 
 import { all, batched, deleteTaskTree, first, uid, todayISO, DEFAULT_PALETTE } from "./lib.js";
+import { demoGoalsBlob, demoTasks, DEMO_TODAY_BLOCKS } from "./demo.js";
 
 const SEED_GROUPS = [
   "All Active Tasks", "Waiting for Feedback",
   "Someone Else' Court", "Holding Pattern / Pending",
-  "Personal Tasks", "Networking", "Done",
+  "Health & Home", "Career & Money", "Relationships", "Side Venture", "Done",
 ];
 
 // The two goal columns are what tie a task to the Goals system: "Goal" holds
@@ -41,17 +42,17 @@ const SEED_AUTOMATIONS = [
   ["Waiting for feedback", "Waiting for Feedback", "moveToGroup", "Waiting for Feedback"],
 ];
 
-// First-run demo board. Example tasks are deliberately generic — this seed
-// ships to other people.
+// First-run demo board: the content lives in demo.js. It ships to other
+// people, so it describes an invented coaching client, never a real board.
 /** The rows to insert: the seeded tasks, plus the linked copies the seeded
- *  automations would have made.
+ *  automations would have made, plus each task's subtasks.
  *
  *  Automations run when a status changes. Seeding writes statuses straight into
  *  the table, so nothing changes and nothing fires - which left a new board
  *  contradicting the rules printed in its own Automations panel. "New -> All
- *  Active" says every Not Started task belongs in All Active Tasks, yet "Book
- *  the dentist" sat in Personal Tasks alone, and the only way to make the rule
- *  take effect was to change the status to something else and back.
+ *  Active" says every Not Started task belongs in All Active Tasks, yet a
+ *  seeded task could sit in its own group alone, and the only way to make the
+ *  rule take effect was to change the status to something else and back.
  *
  *  Deriving the copies from SEED_AUTOMATIONS rather than listing them by hand
  *  keeps one source of truth: edit an automation and the seeded board follows. */
@@ -61,32 +62,22 @@ function seedRows(today) {
     if (action === "copyToGroup" && dest) copyTo.set(trigger, dest);
   }
   const rows = [];
-  for (const [group, cells] of seedTasks(today)) {
+  for (const [group, cells, subs = []] of demoTasks(today)) {
+    const id = uid();
     const dest = copyTo.get(cells.c_status);
     if (!dest || dest === group) {
-      rows.push({ group, cells, link_id: null });
-      continue;
+      rows.push({ id, group, cells, link_id: null, parent_id: null });
+    } else {
+      // Both placements share a link_id, exactly as copyToGroup would leave
+      // them, so an edit to either one follows through to the other.
+      const link = uid();
+      rows.push({ id, group, cells, link_id: link, parent_id: null });
+      rows.push({ id: uid(), group: dest, cells, link_id: link, parent_id: null });
     }
-    // Both placements share a link_id, exactly as copyToGroup would leave them,
-    // so an edit to either one follows through to the other.
-    const link = uid();
-    rows.push({ group, cells, link_id: link });
-    rows.push({ group: dest, cells, link_id: link });
+    // Subtasks hang off the first placement and share its group.
+    for (const sub of subs) rows.push({ id: uid(), group, cells: sub, link_id: null, parent_id: id });
   }
   return rows;
-}
-
-function seedTasks(today) {
-  return [
-    ["All Active Tasks", { c_name: "Draft the quarterly summary", c_status: "Working On It", c_owner: "Me", c_due: today, c_priority: "High", c_hours: 3 }],
-    ["All Active Tasks", { c_name: "Pull last month's numbers", c_status: "Not Started", c_owner: "Me", c_due: "", c_priority: "Medium", c_hours: 2 }],
-    ["All Active Tasks", { c_name: "Try changing a Status — watch the task move groups", c_status: "Not Started", c_owner: "Me", c_due: "", c_priority: "Low", c_hours: 0.25 }],
-    ["Waiting for Feedback", { c_name: "Proposal sent — waiting on comments", c_status: "Waiting for Feedback", c_owner: "Me", c_due: "", c_priority: "Medium", c_hours: 1 }],
-    ["Someone Else' Court", { c_name: "Vendor quote — with procurement", c_status: "In Someone Else' Court", c_owner: "Me", c_due: "", c_priority: "Medium", c_hours: 1 }],
-    ["Holding Pattern / Pending", { c_name: "Office move logistics — parked until Q3", c_status: "Holding Pattern", c_owner: "Me", c_due: "", c_priority: "Low", c_hours: 4 }],
-    ["Personal Tasks", { c_name: "Book the dentist", c_status: "Not Started", c_owner: "Me", c_due: "", c_priority: "Low", c_hours: 0.5 }],
-    ["Networking", { c_name: "Coffee with a former colleague", c_status: "Not Started", c_owner: "Me", c_due: "", c_priority: "Medium", c_hours: 1 }],
-  ];
 }
 
 // Columns for the "Room for Improvements" board.
@@ -118,11 +109,24 @@ export async function ensureSeeded(env) {
       st.push(db.prepare(
         "INSERT OR IGNORE INTO group_order (group_name, position) VALUES (?,?)").bind(grp, pos));
     });
-    seedRows(today).forEach((row, i) => {
+    const rows = seedRows(today);
+    rows.forEach((row, i) => {
       st.push(db.prepare(
-        "INSERT INTO tasks (id, group_name, cells, position, link_id) VALUES (?,?,?,?,?)")
-        .bind(uid(), row.group, JSON.stringify(row.cells), i, row.link_id));
+        "INSERT INTO tasks (id, group_name, cells, position, link_id, parent_id) VALUES (?,?,?,?,?,?)")
+        .bind(row.id, row.group, JSON.stringify(row.cells), i, row.link_id, row.parent_id));
     });
+    // Values and goals for the Goals view. OR IGNORE: a board imported before
+    // its first request keeps its own goals.
+    st.push(db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('goals_os', ?)")
+      .bind(JSON.stringify(demoGoalsBlob(today))));
+    // A planned first day, so Today opens on a schedule rather than a blank page.
+    const byName = new Map(rows.filter((r) => !r.parent_id).map((r) => [r.cells.c_name, r.id]));
+    for (const [start, minutes, label, taskName, color] of DEMO_TODAY_BLOCKS) {
+      st.push(db.prepare(
+        "INSERT INTO schedule_blocks (id, day, start, minutes, task_id, label, color) VALUES (?,?,?,?,?,?,?)")
+        .bind("sb_" + uid(), today, start, minutes, taskName ? byName.get(taskName) ?? null : null,
+              label || taskName, color));
+    }
     SEED_AUTOMATIONS.forEach(([name, trig, action, dest], pos) => {
       st.push(db.prepare(
         `INSERT INTO automations
