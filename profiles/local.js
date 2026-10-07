@@ -19,6 +19,10 @@ window.PROFILE = {
   // Everything runs in the browser.
   storage: "local",
 
+  // This build is what the demo deployment serves, so a first visit opens on
+  // the coaching example (src/demo.js) instead of an empty starter board.
+  demoSeed: "coach",
+
   // The same trimmed set the hosted distribution build ships, for the same
   // reason: these are the surfaces that need the most context to make sense.
   views: ["table", "kanban", "today", "matrix", "goals"],

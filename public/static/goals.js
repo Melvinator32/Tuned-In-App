@@ -1490,11 +1490,15 @@ function renderGoalsDashboard() {
         $("#board").innerHTML = ""; renderGoals();
       } }, label));
   });
-  const untagged = gsAllGoals().filter((g) => g.status !== "done" && !(g.role || "")).length;
-  roleBar.append(el("button", { class: "gd-role-assign",
-    title: "Sort every goal onto a rung of the scorecard ladder",
-    onClick: () => { goalsSubview = "roles"; $("#board").innerHTML = ""; renderGoals(); } },
-    untagged ? `\u21C6 Assign roles (${untagged} unset)` : "\u21C6 Assign roles"));
+  // The roles page is the scorecard ladder; a build without it has no rungs to
+  // assign, so the button would lead nowhere.
+  if (gsSubviewShown("roles")) {
+    const untagged = gsAllGoals().filter((g) => g.status !== "done" && !(g.role || "")).length;
+    roleBar.append(el("button", { class: "gd-role-assign",
+      title: "Sort every goal onto a rung of the scorecard ladder",
+      onClick: () => { goalsSubview = "roles"; $("#board").innerHTML = ""; renderGoals(); } },
+      untagged ? `\u21C6 Assign roles (${untagged} unset)` : "\u21C6 Assign roles"));
+  }
   wrap.append(roleBar);
 
   const ladder = buildRoleLadder();

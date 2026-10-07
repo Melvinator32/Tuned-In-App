@@ -40,7 +40,10 @@
 				}
 			],
 			"vars": {
-				"TZ": "America/Chicago"
+				"TZ": "America/Chicago",
+				// A fresh demo board opens on the coaching example in src/demo.js.
+				// Demo only: no other environment sets this.
+				"DEMO_SEED": "coach"
 			},
 			"observability": {
 				"enabled": true
