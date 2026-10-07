@@ -64,19 +64,25 @@ check("Values + Goal columns present",
 check("no Win/Loss columns are created for you",
   state.columns.filter((c) => c.type === "check").length === 0,
   state.columns.filter((c) => c.type === "check").map((c) => c.name).join());
-// 52 demo tasks, 15 linked copies into All Active Tasks, 7 subtasks.
-check("tasks seeded", state.tasks.length === 74, `${state.tasks.length} tasks`);
-check("subtasks seeded", state.tasks.filter((t) => t.parent_id).length === 7);
-check("groups seeded", Object.keys(state.group_order).length === 9);
-{
+// The demo deployment (DEMO_SEED=coach) seeds the coaching example; every
+// other environment seeds the plain starter board. Check whichever this is.
+const isDemo = "goals_os" in state.settings;
+if (isDemo) {
+  // 52 demo tasks, 15 linked copies into All Active Tasks, 7 subtasks.
+  check("tasks seeded (demo)", state.tasks.length === 74, `${state.tasks.length} tasks`);
+  check("subtasks seeded", state.tasks.filter((t) => t.parent_id).length === 7);
+  check("groups seeded (demo)", Object.keys(state.group_order).length === 9);
   let goals = null;
   try { goals = JSON.parse(state.settings.goals_os); } catch { /* checked below */ }
   check("demo goals seeded", goals && goals.ideas.length === 17 && goals.pillars.length === 6,
-    goals ? `${goals.ideas.length} goals, ${goals.pillars.length} values` : "no goals_os");
+    goals ? `${goals.ideas.length} goals, ${goals.pillars.length} values` : "unreadable goals_os");
   const ids = new Set((goals ? goals.ideas : []).map((g) => g.id));
   const dangling = state.tasks.flatMap((t) => String(t.cells.c_goal || "").split("|"))
     .filter((tag) => tag.startsWith("idea:") && !ids.has(tag.slice(5)));
   check("every task's goal tag points at a seeded goal", dangling.length === 0, dangling.join(", "));
+} else {
+  check("tasks seeded", state.tasks.length === 10, `${state.tasks.length} tasks`);
+  check("groups seeded", Object.keys(state.group_order).length === 7);
 }
 check("no Commercial Models group", !Object.keys(state.group_order).includes("Commercial Models"));
 

@@ -12,8 +12,22 @@ import { demoGoalsBlob, demoTasks, DEMO_TODAY_BLOCKS } from "./demo.js";
 const SEED_GROUPS = [
   "All Active Tasks", "Waiting for Feedback",
   "Someone Else' Court", "Holding Pattern / Pending",
+  "Personal Tasks", "Networking", "Done",
+];
+// The coaching demo files its tasks by life area instead.
+const DEMO_GROUPS = [
+  "All Active Tasks", "Waiting for Feedback",
+  "Someone Else' Court", "Holding Pattern / Pending",
   "Health & Home", "Career & Money", "Relationships", "Side Venture", "Done",
 ];
+
+/** Whether this deployment seeds the coaching demo (src/demo.js) rather than
+ *  the plain starter board. Only the demo deployment turns it on: the Worker
+ *  through the DEMO_SEED var in wrangler.jsonc, the local-first build through
+ *  its profile. A real board must never open on an invented person's life. */
+export function wantsDemoSeed(env) {
+  return String((env && env.DEMO_SEED) || "").trim().toLowerCase() === "coach";
+}
 
 // The two goal columns are what tie a task to the Goals system: "Goal" holds
 // idea:<id> tags the user picks, and "Values" (historically "Pillar") is
@@ -42,8 +56,23 @@ const SEED_AUTOMATIONS = [
   ["Waiting for feedback", "Waiting for Feedback", "moveToGroup", "Waiting for Feedback"],
 ];
 
-// First-run demo board: the content lives in demo.js. It ships to other
-// people, so it describes an invented coaching client, never a real board.
+// The plain starter board. Example tasks are deliberately generic — this seed
+// ships to other people. [group, cells, subtasks].
+function starterTasks(today) {
+  const t = (group, c_name, c_status, c_due, c_priority, c_hours) =>
+    [group, { c_name, c_status, c_owner: "Me", c_due, c_priority, c_hours }, []];
+  return [
+    t("All Active Tasks", "Draft the quarterly summary", "Working On It", today, "High", 3),
+    t("All Active Tasks", "Pull last month's numbers", "Not Started", "", "Medium", 2),
+    t("All Active Tasks", "Try changing a Status — watch the task move groups", "Not Started", "", "Low", 0.25),
+    t("Waiting for Feedback", "Proposal sent — waiting on comments", "Waiting for Feedback", "", "Medium", 1),
+    t("Someone Else' Court", "Vendor quote — with procurement", "In Someone Else' Court", "", "Medium", 1),
+    t("Holding Pattern / Pending", "Office move logistics — parked until Q3", "Holding Pattern", "", "Low", 4),
+    t("Personal Tasks", "Book the dentist", "Not Started", "", "Low", 0.5),
+    t("Networking", "Coffee with a former colleague", "Not Started", "", "Medium", 1),
+  ];
+}
+
 /** The rows to insert: the seeded tasks, plus the linked copies the seeded
  *  automations would have made, plus each task's subtasks.
  *
@@ -56,13 +85,13 @@ const SEED_AUTOMATIONS = [
  *
  *  Deriving the copies from SEED_AUTOMATIONS rather than listing them by hand
  *  keeps one source of truth: edit an automation and the seeded board follows. */
-function seedRows(today) {
+function seedRows(today, demo) {
   const copyTo = new Map();
   for (const [, trigger, action, dest] of SEED_AUTOMATIONS) {
     if (action === "copyToGroup" && dest) copyTo.set(trigger, dest);
   }
   const rows = [];
-  for (const [group, cells, subs = []] of demoTasks(today)) {
+  for (const [group, cells, subs = []] of (demo ? demoTasks(today) : starterTasks(today))) {
     const id = uid();
     const dest = copyTo.get(cells.c_status);
     if (!dest || dest === group) {
@@ -90,12 +119,31 @@ const SEED_IMP_COLUMNS = [
   ["ic_pri", "Priority", "priority", 0, 5],
 ];
 
+/** The demo's goals and first-day schedule, as statements. */
+function demoExtras(db, today, rows) {
+  const st = [];
+  // Values and goals for the Goals view. OR IGNORE: a board imported before
+  // its first request keeps its own goals.
+  st.push(db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('goals_os', ?)")
+    .bind(JSON.stringify(demoGoalsBlob(today))));
+  // A planned first day, so Today opens on a schedule rather than a blank page.
+  const byName = new Map(rows.filter((r) => !r.parent_id).map((r) => [r.cells.c_name, r.id]));
+  for (const [start, minutes, label, taskName, color] of DEMO_TODAY_BLOCKS) {
+    st.push(db.prepare(
+      "INSERT INTO schedule_blocks (id, day, start, minutes, task_id, label, color) VALUES (?,?,?,?,?,?,?)")
+      .bind("sb_" + uid(), today, start, minutes, taskName ? byName.get(taskName) ?? null : null,
+            label || taskName, color));
+  }
+  return st;
+}
+
 /** Seed an empty database and run the every-launch repairs. Cheap and
  *  idempotent: on an already-populated board it issues one small UPDATE and
  *  two counting queries. */
 export async function ensureSeeded(env) {
   const db = env.DB;
   const today = todayISO(env);
+  const demo = wantsDemoSeed(env);
 
   const colCount = await first(db, "SELECT COUNT(*) AS n FROM columns");
   if (!colCount || colCount.n === 0) {
@@ -105,28 +153,17 @@ export async function ensureSeeded(env) {
         "INSERT INTO columns (id, name, type, is_primary, position) VALUES (?,?,?,?,?)")
         .bind(id, name, type, isPrimary, pos));
     }
-    SEED_GROUPS.forEach((grp, pos) => {
+    (demo ? DEMO_GROUPS : SEED_GROUPS).forEach((grp, pos) => {
       st.push(db.prepare(
         "INSERT OR IGNORE INTO group_order (group_name, position) VALUES (?,?)").bind(grp, pos));
     });
-    const rows = seedRows(today);
+    const rows = seedRows(today, demo);
     rows.forEach((row, i) => {
       st.push(db.prepare(
         "INSERT INTO tasks (id, group_name, cells, position, link_id, parent_id) VALUES (?,?,?,?,?,?)")
         .bind(row.id, row.group, JSON.stringify(row.cells), i, row.link_id, row.parent_id));
     });
-    // Values and goals for the Goals view. OR IGNORE: a board imported before
-    // its first request keeps its own goals.
-    st.push(db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('goals_os', ?)")
-      .bind(JSON.stringify(demoGoalsBlob(today))));
-    // A planned first day, so Today opens on a schedule rather than a blank page.
-    const byName = new Map(rows.filter((r) => !r.parent_id).map((r) => [r.cells.c_name, r.id]));
-    for (const [start, minutes, label, taskName, color] of DEMO_TODAY_BLOCKS) {
-      st.push(db.prepare(
-        "INSERT INTO schedule_blocks (id, day, start, minutes, task_id, label, color) VALUES (?,?,?,?,?,?,?)")
-        .bind("sb_" + uid(), today, start, minutes, taskName ? byName.get(taskName) ?? null : null,
-              label || taskName, color));
-    }
+    if (demo) st.push(...demoExtras(db, today, rows));
     SEED_AUTOMATIONS.forEach(([name, trig, action, dest], pos) => {
       st.push(db.prepare(
         `INSERT INTO automations

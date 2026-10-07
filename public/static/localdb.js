@@ -422,6 +422,8 @@
     const env = {
       DB: local,
       TZ: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      // The Worker gets this from wrangler.jsonc; here the profile carries it.
+      DEMO_SEED: (window.PROFILE || {}).demoSeed || "",
     };
 
     // A file chosen on an earlier visit. The handle survives; permission to
